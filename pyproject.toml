@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fraud-detection-system"
+version = "1.0.0"
+description = "Real-time card fraud detection: point-in-time features with an online feature store, calibrated gradient boosting, cost-based decisioning, rules engine, FastAPI service and drift monitoring."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "YOUR_NAME" }]
+keywords = ["fraud-detection", "machine-learning", "feature-store", "fastapi", "imbalanced-learning"]
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "scikit-learn>=1.4",
+  "scipy>=1.10",
+  "joblib>=1.3",
+  "pyyaml>=6.0",
+  "pydantic>=2.5",
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+]
