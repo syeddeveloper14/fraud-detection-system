@@ -1,0 +1,17 @@
+# Kaggle "Credit Card Transactions Fraud Detection" (Sparkov simulator, ~1.85M rows).
+data:
+  source: file
+  paths:
+    - data/raw/fraudTrain.csv
+    - data/raw/fraudTest.csv
+
+split:
+  valid_fraction: 0.15
+  test_fraction: 0.25
+
+model:
+  type: hgb
+  pos_weight: 10.0
+  max_iter: 800
+
+artifacts_dir: artifacts/sparkov

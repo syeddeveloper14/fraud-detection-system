@@ -1,0 +1,42 @@
+data:
+  source: synthetic                # "synthetic" or "file"
+  paths:                           # used when source == file (Kaggle / Sparkov files)
+    - data/raw/fraudTrain.csv
+    - data/raw/fraudTest.csv
+  synthetic:
+    n_cards: 1000
+    days: 180
+    start: "2023-01-01"
+    n_merchants: 400
+    fraud_card_share: 0.12
+    seed: 7
+
+split:                             # time-ordered: train | valid (calibration + tuning) | test
+  valid_fraction: 0.15
+  test_fraction: 0.20
+
+model:
+  type: hgb                        # hgb | lightgbm | logistic
+  pos_weight: 10.0
+  learning_rate: 0.05
+  max_iter: 600
+  max_leaf_nodes: 63
+  min_samples_leaf: 50
+  l2_regularization: 1.0
+  calibration: sigmoid            # sigmoid (Platt) | isotonic | none
+
+costs:                             # drives the approve / review / decline thresholds
+  review_cost: 5.0                 # analyst time per reviewed transaction
+  decline_fp_cost: 15.0            # friction / churn cost of blocking a good customer
+  chargeback_fee: 20.0             # fee on top of the lost amount for missed fraud
+  review_catch_rate: 0.9           # share of reviewed fraud that analysts stop
+  max_review_rate: 0.01            # analyst capacity: at most 1% of traffic to review
+
+monitoring:
+  psi_warn: 0.1
+  psi_alert: 0.25
+  n_bins: 10
+
+rules_path: configs/rules.yaml
+artifacts_dir: artifacts
+seed: 42

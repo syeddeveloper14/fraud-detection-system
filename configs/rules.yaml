@@ -1,0 +1,38 @@
+# Rules run alongside the model. The stricter of the model action and any rule action wins.
+# Features available to rules: every model feature (see docs/feature_catalog.md) plus the raw
+# fields merchant, category and cc_num.
+
+rules:
+  - name: card_testing_burst
+    when:
+      all:
+        - { feature: txn_count_1h, op: ">=", value: 4 }
+        - { feature: amt, op: "<", value: 5 }
+    action: review
+    reason: Burst of small charges in the last hour (possible card testing)
+
+  - name: impossible_travel
+    when:
+      all:
+        - { feature: speed_kmh, op: ">", value: 900 }
+        - { feature: km_from_last, op: ">", value: 500 }
+    action: review
+    reason: Merchant is too far from the previous transaction for the elapsed time
+
+  - name: large_night_online_new_merchant
+    when:
+      all:
+        - { feature: is_night, op: "==", value: 1 }
+        - { feature: amt, op: ">", value: 800 }
+        - { feature: is_new_merchant, op: "==", value: 1 }
+        - { feature: category, op: "in", value: [shopping_net, misc_net] }
+    action: review
+    reason: Large night-time online purchase at a merchant the card has never used
+
+  - name: merchant_watchlist
+    enabled: false   # switch on when operations flags a merchant
+    when:
+      any:
+        - { feature: merchant, op: "in", value: [] }
+    action: decline
+    reason: Merchant is on the investigation watchlist
