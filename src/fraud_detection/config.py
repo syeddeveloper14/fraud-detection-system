@@ -53,3 +53,58 @@ class CostConfig:
     review_cost: float = 5.0
     decline_fp_cost: float = 15.0
     chargeback_fee: float = 20.0
+    review_catch_rate: float = 0.9
+    max_review_rate: float = 0.01
+
+
+@dataclass
+class MonitoringConfig:
+    psi_warn: float = 0.1
+    psi_alert: float = 0.25
+    n_bins: int = 10
+
+
+@dataclass
+class Config:
+    data: DataConfig = field(default_factory=DataConfig)
+    split: SplitConfig = field(default_factory=SplitConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    costs: CostConfig = field(default_factory=CostConfig)
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    rules_path: str | None = "configs/rules.yaml"
+    artifacts_dir: str = "artifacts"
+    seed: int = 42
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+def _build(cls: type, values: dict[str, Any] | None) -> Any:
+    values = values or {}
+    hints = typing.get_type_hints(cls)
+    known = {f.name for f in dataclasses.fields(cls)}
+    unknown = set(values) - known
+    if unknown:
+        raise KeyError(f"Unknown config keys for {cls.__name__}: {sorted(unknown)}")
+    kwargs = {}
+    for f in dataclasses.fields(cls):
+        if f.name in values:
+            ftype = hints[f.name]
+            kwargs[f.name] = (
+                _build(ftype, values[f.name]) if dataclasses.is_dataclass(ftype) else values[f.name]
+            )
+    return cls(**kwargs)
+
+
+def load_config(path: str | Path | None = None, overrides: dict[str, Any] | None = None) -> Config:
+    raw: dict[str, Any] = {}
+    if path is not None:
+        with open(path, encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh) or {}
+    for dotted, value in (overrides or {}).items():
+        node = raw
+        *parents, leaf = dotted.split(".")
+        for key in parents:
+            node = node.setdefault(key, {})
+        node[leaf] = value
+    return _build(Config, raw)
