@@ -216,3 +216,112 @@ def simulate_transactions(
     n_fraud_cards = max(1, int(round(fraud_card_share * n_cards)))
     fraud_cards = rng.choice(n_cards, size=n_fraud_cards, replace=False)
     for card in fraud_cards:
+        lo = min(14.0, days * 0.25)  # leave some clean history before the attack
+        begin = start_ts + pd.Timedelta(days=float(rng.uniform(lo, max(lo + 0.01, days - 3.0))))
+        scenario = rng.choice(["card_testing", "account_takeover", "geo_jump"], p=[0.3, 0.5, 0.2])
+        lat0, long0 = home_lat[card], home_long[card]
+        if scenario == "card_testing":
+            t = begin
+            for _ in range(int(rng.integers(4, 12))):
+                t += pd.Timedelta(minutes=float(rng.uniform(1, 8)))
+                cat = str(rng.choice(["misc_net", "shopping_net"]))
+                add(
+                    card,
+                    t.floor("s"),
+                    cat,
+                    rng.uniform(1, 5),
+                    lat0 + rng.uniform(-1, 1),
+                    long0 + rng.uniform(-1, 1),
+                    1,
+                )
+            for _ in range(int(rng.integers(1, 4))):
+                t += pd.Timedelta(minutes=float(rng.uniform(10, 120)))
+                add(
+                    card,
+                    t.floor("s"),
+                    "shopping_net",
+                    rng.uniform(200, 1200),
+                    lat0 + rng.uniform(-1, 1),
+                    long0 + rng.uniform(-1, 1),
+                    1,
+                )
+        elif scenario == "account_takeover":
+            for _ in range(int(rng.integers(3, 10))):
+                day = int(rng.integers(0, 3))
+                hour = float(rng.choice([22, 23, 0, 1, 2, 3]) + rng.random())
+                t = begin.normalize() + pd.Timedelta(days=day, hours=hour)
+                cat = str(
+                    rng.choice(
+                        ["shopping_net", "grocery_pos", "misc_net", "gas_transport"],
+                        p=[0.45, 0.3, 0.15, 0.1],
+                    )
+                )
+                amt = {
+                    "shopping_net": rng.uniform(300, 1200),
+                    "grocery_pos": rng.uniform(250, 400),
+                    "misc_net": rng.uniform(200, 1000),
+                    "gas_transport": rng.uniform(5, 20),
+                }[cat]
+                add(
+                    card,
+                    t.floor("s"),
+                    cat,
+                    amt,
+                    lat0 + rng.uniform(-1, 1),
+                    long0 + rng.uniform(-1, 1),
+                    1,
+                )
+        else:  # geo_jump
+            far = int(np.argmax((city_lat - lat0) ** 2 + (city_long - long0) ** 2))
+            t = begin
+            add(
+                card,
+                t.floor("s"),
+                "grocery_pos",
+                np.exp(rng.normal(np.log(70), 0.4)),
+                lat0 + rng.uniform(-0.3, 0.3),
+                long0 + rng.uniform(-0.3, 0.3),
+                0,
+            )
+            for _ in range(int(rng.integers(2, 6))):
+                t += pd.Timedelta(minutes=float(rng.uniform(20, 180)))
+                cat = str(rng.choice(["shopping_pos", "travel", "misc_pos"]))
+                add(
+                    card,
+                    t.floor("s"),
+                    cat,
+                    rng.uniform(100, 900),
+                    city_lat[far] + rng.uniform(-0.2, 0.2),
+                    city_long[far] + rng.uniform(-0.2, 0.2),
+                    1,
+                )
+
+    df = pd.concat([legit, pd.DataFrame(rows)], ignore_index=True)
+    df = df[df["ts"] < start_ts + pd.Timedelta(days=days)].copy()
+    cards = df["card"].to_numpy()
+    first = rng.choice(_FIRST, n_cards)
+    last = rng.choice(_LAST, n_cards)
+    gender = rng.choice(["F", "M"], n_cards)
+    job = rng.choice(_JOBS, n_cards)
+    state = rng.choice(_STATES, n_cities)
+
+    df["cc_num"] = np.array(cc_nums)[cards]
+    df["first"] = first[cards]
+    df["last"] = last[cards]
+    df["gender"] = gender[cards]
+    df["street"] = [f"{100 + c * 7 % 9000} Oak St" for c in cards]
+    df["city"] = [f"City{card_city[c]:02d}" for c in cards]
+    df["state"] = state[card_city[cards]]
+    df["zip"] = [f"{10000 + card_city[c] * 1000 + c % 1000:05d}" for c in cards]
+    df["lat"] = np.round(home_lat[cards], 4)
+    df["long"] = np.round(home_long[cards], 4)
+    df["city_pop"] = city_pop[card_city[cards]]
+    df["job"] = job[cards]
+    df["dob"] = [dobs[c].strftime("%Y-%m-%d") for c in cards]
+    df["trans_num"] = _hex_ids(rng, len(df))
+    df["unix_time"] = (df["ts"] - pd.Timestamp("1970-01-01")) // pd.Timedelta(seconds=1)
+    df["merch_lat"] = np.round(df["merch_lat"], 6)
+    df["merch_long"] = np.round(df["merch_long"], 6)
+    df["trans_date_trans_time"] = df["ts"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    df = df.sort_values(["ts", "trans_num"]).reset_index(drop=True)
+    return df[RAW_COLUMNS]
