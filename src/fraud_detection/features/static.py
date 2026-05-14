@@ -24,3 +24,29 @@ def static_features(df: pd.DataFrame) -> pd.DataFrame:
     out["age_years"] = (ts - dob).dt.days / 365.25
     out["distance_home_km"] = haversine_km(df["lat"], df["long"], df["merch_lat"], df["merch_long"])
     out["log_city_pop"] = np.log1p(df["city_pop"].astype(float))
+    out["category"] = df["category"].astype(str).to_numpy()
+    return out
+
+
+def static_row(txn: dict) -> dict[str, object]:
+    """Single-transaction version of ``static_features`` without pandas frames.
+
+    Must produce identical values; ``tests/test_feature_parity.py`` checks this.
+    """
+    ts = pd.Timestamp(txn["ts"])
+    dob = pd.Timestamp(txn["dob"])
+    amt = float(txn["amt"])
+    hour = ts.hour
+    return {
+        "amt": amt,
+        "log_amt": float(np.log1p(amt)),
+        "hour": hour,
+        "day_of_week": ts.dayofweek,
+        "is_night": int(hour >= 22 or hour < 6),
+        "age_years": (ts - dob).days / 365.25,
+        "distance_home_km": float(
+            haversine_km(txn["lat"], txn["long"], txn["merch_lat"], txn["merch_long"])
+        ),
+        "log_city_pop": float(np.log1p(float(txn["city_pop"]))),
+        "category": str(txn["category"]),
+    }
