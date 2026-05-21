@@ -49,3 +49,54 @@ class InMemoryBackend:
         return self._data.get(card)
 
     def put(self, card: str, state: CardState) -> None:
+        self._data[card] = state
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def items(self) -> Iterator[tuple[str, CardState]]:
+        return iter(self._data.items())
+
+
+def _to_seconds(ts: object) -> float:
+    return pd.Timestamp(ts).value / 1e9
+
+
+class OnlineFeatureStore:
+    def __init__(self, backend: StateBackend | None = None) -> None:
+        self.backend: StateBackend = backend or InMemoryBackend()
+        self._max_window = max(BASELINE_WINDOW[1], *(s for _, s in WINDOWS.values()))
+
+    # ----------------------------------------------------------------- features
+    def compute(self, txn: dict) -> dict[str, float]:
+        """History features for ``txn`` given everything seen so far (no state change)."""
+        t = _to_seconds(txn["ts"])
+        amt = float(txn["amt"])
+        state = self.backend.get(str(txn["cc_num"]))
+        feats: dict[str, float] = {}
+
+        events = state.events if state else ()
+        for name, (_, seconds) in WINDOWS.items():
+            lo = t - seconds
+            window_amts = [a for (et, a) in events if lo <= et < t]
+            feats[f"txn_count_{name}"] = float(len(window_amts))
+            feats[f"amt_sum_{name}"] = float(sum(window_amts))
+
+        lo = t - BASELINE_WINDOW[1]
+        base = np.array([a for (et, a) in events if lo <= et < t], dtype=float)
+        mean = float(base.mean()) if len(base) else math.nan
+        std = float(base.std(ddof=1)) if len(base) >= 2 else math.nan
+        feats["amt_mean_30d"] = mean
+        feats["amt_std_30d"] = std
+        feats["amt_zscore_30d"] = (amt - mean) / ((0.0 if math.isnan(std) else std) + 1.0)
+        feats["amt_ratio_30d"] = amt / (mean + 1.0)
+
+        if state is not None and state.last_ts is not None:
+            gap = t - state.last_ts
+            km = float(
+                haversine_km(state.last_lat, state.last_long, txn["merch_lat"], txn["merch_long"])
+            )
+            feats["secs_since_last"] = gap
+            feats["km_from_last"] = km
+            feats["speed_kmh"] = km / max(gap / 3600.0, MIN_GAP_HOURS)
+        else:
