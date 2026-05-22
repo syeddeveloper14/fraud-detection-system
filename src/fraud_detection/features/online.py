@@ -100,3 +100,55 @@ class OnlineFeatureStore:
             feats["km_from_last"] = km
             feats["speed_kmh"] = km / max(gap / 3600.0, MIN_GAP_HOURS)
         else:
+            feats["secs_since_last"] = math.nan
+            feats["km_from_last"] = math.nan
+            feats["speed_kmh"] = math.nan
+
+        feats["is_new_merchant"] = float(
+            state is None or str(txn["merchant"]) not in state.merchants
+        )
+        feats["n_prior_txns"] = float(state.n_txns if state else 0)
+        return feats
+
+    def update(self, txn: dict) -> None:
+        """Add ``txn`` to its card's state. Call after scoring, in stream order."""
+        card = str(txn["cc_num"])
+        t = _to_seconds(txn["ts"])
+        state = self.backend.get(card) or CardState()
+        state.events.append((t, float(txn["amt"])))
+        while state.events and state.events[0][0] < t - self._max_window:
+            state.events.popleft()
+        state.last_ts = t
+        state.last_lat = float(txn["merch_lat"])
+        state.last_long = float(txn["merch_long"])
+        state.n_txns += 1
+        state.merchants.add(str(txn["merchant"]))
+        self.backend.put(card, state)
+
+    def compute_and_update(self, txn: dict) -> dict[str, float]:
+        feats = self.compute(txn)
+        self.update(txn)
+        return feats
+
+    # -------------------------------------------------------------- lifecycle
+    def warm_up(self, history: pd.DataFrame) -> int:
+        """Replay historical transactions (already in stream order) into the store."""
+        cols = ["cc_num", "ts", "amt", "merchant", "merch_lat", "merch_long"]
+        for row in history[cols].itertuples(index=False):
+            self.update(row._asdict())
+        return len(history)
+
+    def __len__(self) -> int:
+        return len(self.backend)
+
+    def save(self, path: str | Path) -> None:
+        with open(path, "wb") as fh:
+            pickle.dump(dict(self.backend.items()), fh)
+
+    @classmethod
+    def load(cls, path: str | Path) -> OnlineFeatureStore:
+        store = cls()
+        with open(path, "rb") as fh:
+            for card, state in pickle.load(fh).items():
+                store.backend.put(card, state)
+        return store
