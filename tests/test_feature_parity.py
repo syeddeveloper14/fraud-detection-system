@@ -38,3 +38,44 @@ def test_history_parity(small_df):
 def test_static_parity(small_df):
     sample = small_df.sample(500, random_state=0)
     offline = static_features(sample)
+    online = pd.DataFrame(
+        [static_row(t) for t in sample[SCORING_FIELDS].to_dict("records")], index=sample.index
+    )
+    for col in STATIC_FEATURES:
+        _assert_close(online[col], offline[col], col)
+    assert (online["category"] == offline["category"]).all()
+
+
+def test_warm_up_then_stream_matches_full_stream(small_df):
+    cut = len(small_df) // 2
+    offline = history_features(small_df)
+    store = OnlineFeatureStore()
+    store.warm_up(small_df.iloc[:cut])
+    tail = small_df.iloc[cut:]
+    online = pd.DataFrame(
+        [store.compute_and_update(t) for t in tail[SCORING_FIELDS].to_dict("records")],
+        index=tail.index,
+    )
+    for col in HISTORY_FEATURES:
+        _assert_close(online[col], offline.loc[tail.index, col], col)
+
+
+def test_compute_does_not_mutate(small_df):
+    store = OnlineFeatureStore()
+    txn = small_df[SCORING_FIELDS].iloc[0].to_dict()
+    first = store.compute(txn)
+    second = store.compute(txn)
+    assert first.keys() == second.keys()
+    assert len(store) == 0
+
+
+def test_store_roundtrip(tmp_path, small_df):
+    store = OnlineFeatureStore()
+    store.warm_up(small_df.iloc[:500])
+    path = tmp_path / "store.pkl"
+    store.save(path)
+    restored = OnlineFeatureStore.load(path)
+    txn = small_df[SCORING_FIELDS].iloc[500].to_dict()
+    a, b = store.compute(txn), restored.compute(txn)
+    for key in a:
+        assert (np.isnan(a[key]) and np.isnan(b[key])) or a[key] == b[key]
