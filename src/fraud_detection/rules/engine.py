@@ -85,3 +85,47 @@ def _evaluate(cond: dict[str, Any], ctx: dict[str, Any]) -> bool:
         return all(_evaluate(c, ctx) for c in cond["all"])
     if "any" in cond:
         return any(_evaluate(c, ctx) for c in cond["any"])
+    if "not" in cond:
+        return not _evaluate(cond["not"], ctx)
+    value = ctx.get(cond["feature"])
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return False  # missing data never triggers a rule
+    try:
+        return bool(OPERATORS[cond["op"]](value, cond["value"]))
+    except TypeError:
+        return False
+
+
+class RuleEngine:
+    def __init__(self, rules: list[Rule]) -> None:
+        names = [r.name for r in rules]
+        if len(names) != len(set(names)):
+            raise RuleError("Rule names must be unique")
+        for rule in rules:
+            if rule.action not in RULE_ACTIONS:
+                raise RuleError(f"{rule.name}: action must be one of {RULE_ACTIONS}")
+            _validate(rule.when, rule.name)
+        self.rules = rules
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RuleEngine:
+        return cls([Rule(**r) for r in data.get("rules", [])])
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> RuleEngine:
+        with open(path, encoding="utf-8") as fh:
+            return cls.from_dict(yaml.safe_load(fh) or {})
+
+    @classmethod
+    def empty(cls) -> RuleEngine:
+        return cls([])
+
+    def evaluate(self, context: dict[str, Any]) -> list[RuleHit]:
+        return [
+            RuleHit(r.name, r.action, r.reason)
+            for r in self.rules
+            if r.enabled and _evaluate(r.when, context)
+        ]
+
+    def __len__(self) -> int:
+        return len(self.rules)
