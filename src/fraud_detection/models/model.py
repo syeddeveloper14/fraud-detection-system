@@ -66,3 +66,71 @@ def build_estimator(cfg: ModelConfig, spec: FeatureSpec, seed: int) -> Any:
         )
     if cfg.type == "lightgbm":
         try:
+            import lightgbm as lgb
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError("pip install 'fraud-detection-system[lightgbm]'") from exc
+        return lgb.LGBMClassifier(
+            n_estimators=cfg.max_iter,
+            learning_rate=cfg.learning_rate,
+            num_leaves=cfg.max_leaf_nodes,
+            min_child_samples=cfg.min_samples_leaf,
+            reg_lambda=cfg.l2_regularization,
+            subsample=0.8,
+            subsample_freq=1,
+            colsample_bytree=0.8,
+            random_state=seed,
+            verbose=-1,
+        )
+    if cfg.type == "logistic":
+        numeric_idx = np.flatnonzero(~cat_mask).tolist()
+        cat_idx = np.flatnonzero(cat_mask).tolist()
+        pre = ColumnTransformer(
+            [
+                (
+                    "num",
+                    make_pipeline(
+                        SimpleImputer(strategy="median", add_indicator=True), StandardScaler()
+                    ),
+                    numeric_idx,
+                ),
+                ("cat", OneHotEncoder(handle_unknown="ignore"), cat_idx),
+            ]
+        )
+        return Pipeline([("pre", pre), ("clf", LogisticRegression(max_iter=3000, C=0.5))])
+    raise ValueError(f"Unknown model type {cfg.type!r}")
+
+
+@dataclass
+class FraudModel:
+    config: ModelConfig = field(default_factory=ModelConfig)
+    spec: FeatureSpec = field(default_factory=FeatureSpec)
+    seed: int = 42
+    merchant_encoder: TargetEncoder | None = None
+    category_encoder: TargetEncoder | None = None
+    estimator: Any = None
+    calibrator: IsotonicRegression | SigmoidCalibrator | None = None
+
+    # ------------------------------------------------------------ encodings
+    def _check_encoders(self) -> None:
+        if self.merchant_encoder is None or self.category_encoder is None:
+            raise RuntimeError("Encoders are not fitted")
+
+    def model_frame(self, feats: pd.DataFrame) -> pd.DataFrame:
+        """Raw feature frame -> encoded float matrix (as a DataFrame with named columns)."""
+        self._check_encoders()
+        encoded = feats.copy()
+        encoded["merchant_risk"] = self.merchant_encoder.transform(feats["merchant"])
+        encoded["category_risk"] = self.category_encoder.transform(feats["category"])
+        return self.spec.to_model_frame(encoded)
+
+    def row_vector(self, row: dict[str, Any]) -> np.ndarray:
+        """Online equivalent of ``model_frame`` for one transaction."""
+        self._check_encoders()
+        values = dict(row)
+        values["merchant_risk"] = self.merchant_encoder.transform_one(row["merchant"])
+        values["category_risk"] = self.category_encoder.transform_one(row["category"])
+        return self.spec.row_vector(values)
+
+    # -------------------------------------------------------------- training
+    def fit(
+        self,
