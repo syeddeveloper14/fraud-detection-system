@@ -134,3 +134,71 @@ class FraudModel:
     # -------------------------------------------------------------- training
     def fit(
         self,
+        feats: pd.DataFrame,
+        y: pd.Series,
+        eval_feats: pd.DataFrame | None = None,
+        eval_y: pd.Series | None = None,
+    ) -> FraudModel:
+        y = pd.Series(np.asarray(y), index=feats.index)
+        self.merchant_encoder = TargetEncoder(seed=self.seed)
+        self.category_encoder = TargetEncoder(seed=self.seed)
+        encoded = feats.copy()
+        encoded["merchant_risk"] = self.merchant_encoder.fit_transform_oof(feats["merchant"], y)
+        encoded["category_risk"] = self.category_encoder.fit_transform_oof(feats["category"], y)
+        X = self.spec.to_model_frame(encoded).to_numpy()
+        weights = np.where(y.to_numpy() == 1, self.config.pos_weight, 1.0)
+
+        self.estimator = build_estimator(self.config, self.spec, self.seed)
+        if self.config.type == "logistic":
+            self.estimator.fit(X, y.to_numpy(), clf__sample_weight=weights)
+        elif self.config.type == "lightgbm":
+            import lightgbm as lgb
+
+            fit_kwargs: dict[str, Any] = {
+                "sample_weight": weights,
+                "categorical_feature": np.flatnonzero(self.spec.categorical_mask).tolist(),
+            }
+            if eval_feats is not None:
+                fit_kwargs["eval_set"] = [
+                    (self.model_frame(eval_feats).to_numpy(), np.asarray(eval_y))
+                ]
+                fit_kwargs["callbacks"] = [lgb.early_stopping(50, verbose=False)]
+            self.estimator.fit(X, y.to_numpy(), **fit_kwargs)
+        else:
+            self.estimator.fit(X, y.to_numpy(), sample_weight=weights)
+        self.calibrator = None
+        return self
+
+    def calibrate(self, feats: pd.DataFrame, y: pd.Series) -> FraudModel:
+        """Fit a calibrator on a held-out, later time period.
+
+        Class weighting during training inflates raw scores; calibration maps them back to
+        probabilities so cost-based thresholds mean what they say.
+        """
+        method = self.config.calibration
+        if method == "none":
+            return self
+        raw = self.predict_raw(feats)
+        if method == "sigmoid":
+            self.calibrator = SigmoidCalibrator().fit(raw, np.asarray(y))
+        elif method == "isotonic":
+            self.calibrator = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+            self.calibrator.fit(raw, np.asarray(y))
+        else:
+            raise ValueError(f"Unknown calibration method {method!r}")
+        return self
+
+    # ------------------------------------------------------------ inference
+    def predict_raw_matrix(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
+        if self.estimator is None:
+            raise RuntimeError("Model is not fitted")
+        return self.estimator.predict_proba(np.asarray(X, dtype=float))[:, 1]
+
+    def predict_raw(self, feats: pd.DataFrame) -> np.ndarray:
+        return self.predict_raw_matrix(self.model_frame(feats))
+
+    def calibrated(self, raw: np.ndarray) -> np.ndarray:
+        return self.calibrator.predict(raw) if self.calibrator is not None else raw
+
+    def predict_proba(self, feats: pd.DataFrame) -> np.ndarray:
+        return self.calibrated(self.predict_raw(feats))
