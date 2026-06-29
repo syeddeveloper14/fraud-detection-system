@@ -56,3 +56,62 @@ def outcome_costs(y: np.ndarray, amt: np.ndarray, costs: CostConfig) -> dict[str
     }
 
 
+def total_cost(
+    y: np.ndarray, amt: np.ndarray, scores: np.ndarray, thresholds: Thresholds, costs: CostConfig
+) -> dict[str, float]:
+    per = outcome_costs(y, amt, costs)
+    actions = thresholds.actions(scores)
+    breakdown = {a: float(per[a][actions == a].sum()) for a in ACTIONS}
+    breakdown["total"] = float(sum(breakdown.values()))
+    return breakdown
+
+
+def optimize_thresholds(
+    y: np.ndarray,
+    amt: np.ndarray,
+    scores: np.ndarray,
+    costs: CostConfig,
+    n_candidates: int = 400,
+) -> tuple[Thresholds, dict[str, float]]:
+    """Grid search over (review, decline) cut points in O(n log n + candidates^2).
+
+    Rows are sorted by score; for cut positions k_d <= k_r the top k_d rows are declined,
+    the next k_r - k_d reviewed and the rest approved. Prefix sums give each pair's cost in
+    O(1), so the whole grid is evaluated with array broadcasting.
+    """
+    scores = np.asarray(scores, dtype=float)
+    order = np.argsort(-scores, kind="mergesort")
+    s = scores[order]
+    per = outcome_costs(np.asarray(y)[order], np.asarray(amt)[order], costs)
+    zero = np.zeros(1)
+    cum = {a: np.concatenate([zero, np.cumsum(per[a])]) for a in ACTIONS}
+    n = len(s)
+
+    # Candidate cut positions: only where the score changes (ties must stay together).
+    boundaries = np.flatnonzero(np.r_[True, s[1:] != s[:-1]])  # first index of each score value
+    cuts = np.unique(np.r_[0, boundaries, n])
+    if len(cuts) > n_candidates:
+        cuts = np.unique(np.r_[0, cuts[np.linspace(0, len(cuts) - 1, n_candidates).astype(int)], n])
+
+    kd = cuts[:, None]
+    kr = cuts[None, :]
+    cost = (
+        cum["decline"][kd]
+        + (cum["review"][kr] - cum["review"][kd])
+        + (cum["approve"][n] - cum["approve"][kr])
+    )
+    valid = kr >= kd
+    if costs.max_review_rate is not None:
+        valid &= (kr - kd) <= costs.max_review_rate * n
+    cost = np.where(valid, cost, np.inf)
+    i, j = np.unravel_index(np.argmin(cost), cost.shape)
+    k_d, k_r = int(cuts[i]), int(cuts[j])
+
+    def threshold_at(k: int) -> float:
+        # Smallest score inside the top-k block; above every score when k == 0.
+        return float(s[k - 1]) if k > 0 else float(np.nextafter(s[0], np.inf)) if n else 1.0
+
+    decline_t = threshold_at(k_d)
+    review_t = min(threshold_at(k_r), decline_t)
+    thresholds = Thresholds(review=review_t, decline=decline_t)
+    return thresholds, total_cost(y, amt, scores, thresholds, costs)
