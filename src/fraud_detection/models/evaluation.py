@@ -44,3 +44,49 @@ def evaluate(
         "brier": float(brier_score_loss(y, scores)),
         "recall_at_fpr_0.1%": recall_at_fpr(y, scores, 0.001),
         "recall_at_fpr_1%": recall_at_fpr(y, scores, 0.01),
+        "precision_at_top_0.5%": precision_at_top(y, scores, 0.005),
+        "precision_at_top_1%": precision_at_top(y, scores, 0.01),
+        "thresholds": thresholds.to_dict(),
+        "action_rates": {a: float((actions == a).mean()) for a in ACTIONS},
+        "fraud_recall": float(caught.sum() / max(fraud.sum(), 1)),
+        "fraud_dollar_recall": float(amt[caught].sum() / max(amt[fraud].sum(), 1e-9)),
+        "false_positive_rate": float(
+            ((actions != "approve") & ~fraud).sum() / max((~fraud).sum(), 1)
+        ),
+    }
+    model_cost = total_cost(y, amt, scores, thresholds, costs)
+    approve_all = total_cost(
+        y, amt, np.zeros_like(scores), Thresholds(review=2.0, decline=2.0), costs
+    )
+    out["cost"] = model_cost
+    out["cost_approve_all"] = approve_all["total"]
+    out["cost_savings"] = approve_all["total"] - model_cost["total"]
+    out["cost_savings_pct"] = out["cost_savings"] / max(approve_all["total"], 1e-9)
+    return out
+
+
+def confusion_by_action(y: np.ndarray, scores: np.ndarray, thresholds: Thresholds) -> pd.DataFrame:
+    actions = thresholds.actions(scores)
+    table = pd.crosstab(
+        pd.Series(np.where(np.asarray(y) == 1, "fraud", "legit"), name="truth"),
+        pd.Series(actions, name="action"),
+    )
+    return table.reindex(columns=list(ACTIONS), fill_value=0)
+
+
+def calibration_table(
+    y: np.ndarray,
+    scores: np.ndarray,
+    edges: tuple[float, ...] = (0.0, 0.001, 0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0),
+) -> pd.DataFrame:
+    """Observed vs predicted fraud rate in fixed score bands.
+
+    Fixed bands (rather than deciles) keep the high-score region visible when fraud is rare.
+    """
+    frame = pd.DataFrame({"y": np.asarray(y), "p": np.asarray(scores)})
+    frame["band"] = pd.cut(frame["p"], bins=list(edges), include_lowest=True)
+    table = frame.groupby("band", observed=False).agg(
+        n=("y", "size"), mean_score=("p", "mean"), fraud_rate=("y", "mean")
+    )
+    table.index = table.index.astype(str)
+    return table
