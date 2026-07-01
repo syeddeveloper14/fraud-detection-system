@@ -50,3 +50,55 @@ def permutation_importance(
     return pd.DataFrame(rows).sort_values("importance", ascending=False).reset_index(drop=True)
 
 
+def legit_baseline(
+    X: pd.DataFrame, y: np.ndarray, categorical: list[str] | tuple[str, ...] = ()
+) -> dict[str, float]:
+    """Typical legitimate value per feature: median for numeric, mode for categorical codes."""
+    legit = X[np.asarray(y) == 0]
+    return {
+        col: float(legit[col].mode().iat[0]) if col in categorical else float(legit[col].median())
+        for col in X.columns
+    }
+
+
+@dataclass
+class ReasonCoder:
+    baseline: dict[str, float]
+    candidates: list[str] = field(default_factory=list)  # features to test, most important first
+    category_levels: dict[str, list[str]] = field(default_factory=dict)  # decode codes for display
+    top_k: int = 3
+
+    def _display(self, col: str, value: float) -> float | str | None:
+        if pd.isna(value):
+            return None
+        if col in self.category_levels:
+            levels = self.category_levels[col]
+            return levels[int(value)] if 0 <= int(value) < len(levels) else None
+        return float(value)
+
+    def explain(self, model: FraudModel, X_row: pd.DataFrame) -> list[dict[str, object]]:
+        if len(X_row) != 1:
+            raise ValueError("explain() expects a single-row model frame")
+        cols = [c for c in self.candidates if c in X_row.columns]
+        if not cols:
+            return []
+        batch = np.repeat(X_row.to_numpy(dtype=float), len(cols) + 1, axis=0)
+        positions = {c: i for i, c in enumerate(X_row.columns)}
+        for i, col in enumerate(cols, start=1):
+            batch[i, positions[col]] = self.baseline[col]
+        scores = model.predict_raw_matrix(batch)
+        impact = scores[0] - scores[1:]
+        reasons = []
+        for j in np.argsort(-impact)[: self.top_k]:
+            if impact[j] <= 0:
+                break
+            col = cols[j]
+            reasons.append(
+                {
+                    "feature": col,
+                    "description": FEATURE_DESCRIPTIONS.get(col, col),
+                    "value": self._display(col, X_row.iloc[0][col]),
+                    "impact": float(impact[j]),
+                }
+            )
+        return reasons
