@@ -48,3 +48,53 @@ def _categorical_profile(values: pd.Series) -> dict[str, Any]:
 
 
 def _categorical_props(values: pd.Series, levels: list[str]) -> np.ndarray:
+    counts = values.astype(str).value_counts()
+    known = np.array([counts.get(level, 0) for level in levels], dtype=float)
+    other = len(values) - known.sum()
+    return np.r_[known, other] / max(len(values), 1)
+
+
+def reference_profile(
+    X: pd.DataFrame,
+    scores: np.ndarray | None = None,
+    n_bins: int = 10,
+    categorical: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
+    profile: dict[str, Any] = {"features": {}, "n": int(len(X))}
+    for col in X.columns:
+        if (
+            col in categorical
+            or isinstance(X[col].dtype, pd.CategoricalDtype)
+            or X[col].dtype == object
+        ):
+            profile["features"][col] = _categorical_profile(X[col])
+        else:
+            profile["features"][col] = _numeric_profile(X[col], n_bins)
+    if scores is not None:
+        profile["score"] = _numeric_profile(pd.Series(scores), n_bins)
+    return profile
+
+
+def drift_report(
+    profile: dict[str, Any],
+    X: pd.DataFrame,
+    scores: np.ndarray | None = None,
+    warn: float = 0.1,
+    alert: float = 0.25,
+) -> pd.DataFrame:
+    rows = []
+    items = list(profile["features"].items())
+    if scores is not None and "score" in profile:
+        items.append(("__score__", profile["score"]))
+    for name, ref in items:
+        values = pd.Series(scores) if name == "__score__" else X[name]
+        if ref["kind"] == "numeric":
+            current = _numeric_props(values.to_numpy(dtype=float), ref["edges"])
+            expected = np.asarray(ref["proportions"])
+        else:
+            current = _categorical_props(values, ref["levels"])
+            expected = np.r_[ref["proportions"], 0.0]
+        value = psi(expected, current)
+        status = "alert" if value >= alert else "warn" if value >= warn else "ok"
+        rows.append({"feature": name, "psi": value, "status": status})
+    return pd.DataFrame(rows).sort_values("psi", ascending=False).reset_index(drop=True)
