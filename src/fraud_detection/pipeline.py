@@ -191,3 +191,100 @@ def train_pipeline(cfg: Config, df: pd.DataFrame | None = None) -> TrainResult:
         calibration_table(y_test, p_test),
     )
     log.info("Saved bundle %s", bundle_dir)
+    return TrainResult(bundle=bundle, bundle_dir=bundle_dir, metrics=test_metrics)
+
+
+def _table(df: pd.DataFrame, fmt: str = "{:,.4f}") -> str:
+    frame = df.reset_index()
+    head = "| " + " | ".join(map(str, frame.columns)) + " |"
+    sep = "|" + "|".join("---" for _ in frame.columns) + "|"
+    body = [
+        "| "
+        + " | ".join(fmt.format(v) if isinstance(v, float | np.floating) else str(v) for v in row)
+        + " |"
+        for row in frame.itertuples(index=False)
+    ]
+    return "\n".join([head, sep, *body])
+
+
+def write_model_card(
+    bundle: ModelBundle, path: Path, confusion: pd.DataFrame, calibration: pd.DataFrame
+) -> Path:
+    m = bundle.metadata
+    t = m["test_metrics"]
+    b = m.get("baseline_test_metrics")
+    rows = [
+        ("ROC-AUC", "roc_auc"),
+        ("PR-AUC", "pr_auc"),
+        ("Recall @ 0.1% FPR", "recall_at_fpr_0.1%"),
+        ("Recall @ 1% FPR", "recall_at_fpr_1%"),
+        ("Precision in top 0.5%", "precision_at_top_0.5%"),
+        ("Fraud recall (review + decline)", "fraud_recall"),
+        ("Fraud $ recall", "fraud_dollar_recall"),
+        ("False positive rate", "false_positive_rate"),
+        ("Cost savings vs approve-all", "cost_savings_pct"),
+    ]
+    metric_lines = ["| Metric | Model | Logistic baseline |", "|---|---|---|"]
+    for label, key in rows:
+        base = f"{b[key]:.4f}" if b else "n/a"
+        metric_lines.append(f"| {label} | {t[key]:.4f} | {base} |")
+    importance = "\n".join(
+        f"| {r['feature']} | {FEATURE_DESCRIPTIONS.get(r['feature'], '')} | {r['importance']:.4f} |"
+        for r in m["feature_importance"]
+    )
+    d = m["data"]
+    text = f"""# Model card: card fraud detection ({bundle.version})
+
+## Intended use
+Real-time scoring of card-not-present and card-present transactions. Each transaction gets a
+calibrated fraud probability and an action (approve / review / decline). The model supports
+analysts; declines above the decline threshold are automatic.
+
+## Data
+- {d["rows"]:,} transactions, overall fraud rate {d["fraud_rate"]:.4%}
+- Time-ordered splits: train {d["train_window"][0]} to {d["train_window"][1]},
+  calibration {d["calib_window"][0]} to {d["calib_window"][1]},
+  threshold tuning {d["tune_window"][0]} to {d["tune_window"][1]},
+  test {d["test_window"][0]} to {d["test_window"][1]}
+
+## Model
+- Type: `{m["model_type"]}` with smoothed out-of-fold target encoding for merchant and category,
+  positive-class weight {m["config"]["model"]["pos_weight"]}, isotonic calibration on the
+  calibration period
+- Features: {len(m["features"])} point-in-time features (see docs/feature_catalog.md)
+
+## Decision thresholds (tuned for minimum expected cost)
+- Decline if score >= {m["thresholds"]["decline"]:.4f}
+- Review if score >= {m["thresholds"]["review"]:.4f}
+- Cost assumptions: review {m["costs"]["review_cost"]}, false decline {m["costs"]["decline_fp_cost"]},
+  chargeback fee {m["costs"]["chargeback_fee"]}, review catch rate {m["costs"]["review_catch_rate"]},
+  review capacity {m["costs"]["max_review_rate"]:.2%} of traffic
+
+## Test-period performance
+{chr(10).join(metric_lines)}
+
+Action rates on the test period: {", ".join(f"{k} {v:.3%}" for k, v in t["action_rates"].items())}
+
+Confusion by action:
+
+{_table(confusion, "{:,.0f}")}
+
+Calibration (test period, fixed score bands):
+
+{_table(calibration)}
+
+## Most important features (permutation importance, drop in PR-AUC)
+| Feature | Description | Importance |
+|---|---|---|
+{importance}
+
+## Limitations
+- Labels arrive late (chargebacks take weeks); the most recent weeks of any training window
+  are under-labelled. Leave a label-maturity gap before the end of the training data.
+- Thresholds depend on the cost assumptions above; revisit them when review staffing or
+  chargeback fees change.
+- Target encodings are fixed at training time; new merchants fall back to the global rate.
+- Velocity features assume transactions arrive in timestamp order per card.
+"""
+    path.write_text(text, encoding="utf-8")
+    return path
