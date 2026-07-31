@@ -35,3 +35,40 @@ class TransactionIn(BaseModel):
                     "long": -91.8912,
                     "merch_lat": 41.1012,
                     "merch_long": -92.2210,
+                    "city_pop": 1306,
+                    "dob": "1968-03-19",
+                }
+            ]
+        }
+    }
+
+
+class Reason(BaseModel):
+    feature: str
+    description: str
+    value: float | str | None
+    impact: float
+
+
+class RuleHitOut(BaseModel):
+    name: str
+    action: str
+    reason: str
+
+
+class ScoreOut(BaseModel):
+    trans_num: str
+    score: float
+    action: str
+    model_action: str
+    reasons: list[Reason]
+    rule_hits: list[RuleHitOut]
+    model_version: str
+    latency_ms: float
+
+
+class HealthOut(BaseModel):
+    status: str
+    model_version: str
+    cards_in_store: int
+    rules_loaded: int
