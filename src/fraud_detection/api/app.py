@@ -36,3 +36,41 @@ class ServiceMetrics:
         self.latencies.append(latency_ms)
 
     def prometheus(self, version: str) -> str:
+        lines = [
+            "# HELP fraud_decisions_total Decisions by action",
+            "# TYPE fraud_decisions_total counter",
+        ]
+        for action in ("approve", "review", "decline"):
+            lines.append(
+                f'fraud_decisions_total{{action="{action}",model="{version}"}} {self.actions[action]}'
+            )
+        lines += ["# TYPE fraud_errors_total counter", f"fraud_errors_total {self.errors}"]
+        if self.latencies:
+            lat = np.array(self.latencies)
+            lines.append("# TYPE fraud_latency_ms summary")
+            for q in (0.5, 0.95, 0.99):
+                lines.append(f'fraud_latency_ms{{quantile="{q}"}} {np.quantile(lat, q):.3f}')
+        return "\n".join(lines) + "\n"
+
+
+def create_app(
+    bundle: ModelBundle | None = None,
+    rules: RuleEngine | None = None,
+    warmup_path: str | None = None,
+) -> FastAPI:
+    bundle = bundle or load_bundle(os.environ.get("FRAUD_BUNDLE", "artifacts"))
+    if rules is None and os.environ.get("FRAUD_RULES"):
+        rules = RuleEngine.from_yaml(os.environ["FRAUD_RULES"])
+    engine = DecisionEngine(bundle, rules=rules)
+    warmup_path = warmup_path or os.environ.get("FRAUD_WARMUP")
+    if warmup_path:
+        engine.store.warm_up(load_transactions([warmup_path]))
+
+    # The feature store is mutable shared state; serialise access to it.
+    lock = threading.Lock()
+    metrics = ServiceMetrics()
+
+    app = FastAPI(
+        title="Fraud Detection API",
+        version=bundle.version,
+        description="Scores card transactions in real time and returns approve / review / decline.",
