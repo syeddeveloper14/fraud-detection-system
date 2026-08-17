@@ -74,3 +74,42 @@ def create_app(
         title="Fraud Detection API",
         version=bundle.version,
         description="Scores card transactions in real time and returns approve / review / decline.",
+    )
+
+    @app.get("/health", response_model=HealthOut)
+    def health() -> HealthOut:
+        return HealthOut(
+            status="ok",
+            model_version=bundle.version,
+            cards_in_store=len(engine.store),
+            rules_loaded=len(engine.rules),
+        )
+
+    @app.post("/v1/score", response_model=ScoreOut)
+    def score(txn: TransactionIn) -> ScoreOut:
+        payload = txn.model_dump()
+        try:
+            with lock:
+                decision = engine.decide(payload)
+        except Exception as exc:  # surface a clean error, keep the counter
+            metrics.errors += 1
+            raise HTTPException(status_code=500, detail=f"scoring failed: {exc}") from exc
+        metrics.observe(decision.action, decision.latency_ms)
+        return ScoreOut(**decision.to_dict())
+
+    @app.post("/v1/score/batch", response_model=list[ScoreOut])
+    def score_batch(txns: list[TransactionIn]) -> list[ScoreOut]:
+        ordered = sorted(txns, key=lambda t: (t.ts, t.trans_num))  # history must see stream order
+        out = []
+        with lock:
+            for txn in ordered:
+                decision = engine.decide(txn.model_dump())
+                metrics.observe(decision.action, decision.latency_ms)
+                out.append(ScoreOut(**decision.to_dict()))
+        return out
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    def prometheus_metrics() -> str:
+        return metrics.prometheus(bundle.version)
+
+    return app
