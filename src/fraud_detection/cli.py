@@ -96,3 +96,53 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fraud-detect")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("simulate", help="write a synthetic dataset in the Sparkov schema")
+    p.add_argument("--n-cards", type=int, default=1000)
+    p.add_argument("--days", type=int, default=180)
+    p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--out", default="data/raw/synthetic_transactions.csv")
+    p.set_defaults(func=_cmd_simulate)
+
+    p = sub.add_parser("train", help="train, calibrate, tune thresholds and save a bundle")
+    p.add_argument("--config", default="configs/default.yaml")
+    p.set_defaults(func=_cmd_train)
+
+    p = sub.add_parser("replay", help="stream the test period through the online path")
+    p.add_argument("--config", default="configs/default.yaml")
+    p.add_argument("--bundle")
+    p.add_argument("--limit", type=int, help="only replay the first N test transactions")
+    p.add_argument("--check-parity", action="store_true", help="compare online vs offline features")
+    p.add_argument("--out", default="reports/replay_decisions.csv")
+    p.set_defaults(func=_cmd_replay)
+
+    p = sub.add_parser("monitor", help="PSI drift report for a new batch of transactions")
+    p.add_argument("--config", default="configs/default.yaml")
+    p.add_argument("--bundle")
+    p.add_argument("--data", required=True)
+    p.add_argument("--fail-on-alert", action="store_true")
+    p.set_defaults(func=_cmd_monitor)
+
+    p = sub.add_parser("serve", help="start the scoring API")
+    p.add_argument("--config", default="configs/default.yaml")
+    p.add_argument("--bundle")
+    p.add_argument("--warmup", help="CSV of recent transactions to pre-load card history")
+    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--port", type=int, default=8000)
+    p.set_defaults(func=_cmd_serve)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
