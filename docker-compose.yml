@@ -1,0 +1,12 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./artifacts:/app/artifacts:ro      # trained bundles (run `make train` first)
+      - ./data/raw:/app/data/raw:ro        # optional warm-up data
+    environment:
+      FRAUD_BUNDLE: /app/artifacts
+      FRAUD_RULES: /app/configs/rules.yaml
+      # FRAUD_WARMUP: /app/data/raw/recent_transactions.csv
